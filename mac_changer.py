@@ -1,90 +1,207 @@
 import subprocess
 import random
 import os
-import logging
+import threading
+import time
+import json
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+print(">>> SYSTEM CHECK: Initializing MAC Rotator...")
 
-class MacChangerError(Exception):
-    pass
+# Global State
+all_logs = []
+log_lock = threading.Lock()
+is_running = False
+current_config = {"interface": None, "interval": 0}
+
+def log_event(message, level="INFO"):
+    timestamp = time.time()
+    entry = {"message": f"[{level}] {message}", "timestamp": timestamp}
+    with log_lock:
+        all_logs.append(entry)
+    print(f"[{level}] {message}")
+
+def get_default_interface():
+    """Detects the interface used for default internet connection."""
+    try:
+        result = subprocess.run(["ip", "route", "show", "default"], capture_output=True, text=True)
+        if result.returncode == 0 and "dev" in result.stdout:
+            parts = result.stdout.split()
+            if "dev" in parts:
+                idx = parts.index("dev")
+                if idx + 1 < len(parts):
+                    return parts[idx + 1]
+    except Exception:
+        return None
+    return None
+
+def interface_exists(interface):
+    """Check if an interface exists on the system."""
+    try:
+        result = subprocess.run(["ip", "link", "show", interface], capture_output=True, text=True)
+        return result.returncode == 0
+    except Exception:
+        return False
 
 def generate_random_mac():
-    """Generate a random MAC address with valid unicast bits."""
-    # First byte must be even (unicast) and not 00
     first_byte = random.randint(1, 254) & 0xFE
-    if first_byte == 0:
-        first_byte = 2
-    
+    if first_byte == 0: first_byte = 2
     mac = [first_byte]
     for _ in range(5):
         mac.append(random.randint(0, 255))
-    
     return ":".join(f"{b:02x}" for b in mac)
 
-def get_interface_list():
-    """List available network interfaces (Linux only)."""
-    try:
-        # Using ip command which is standard on modern Linux
-        result = subprocess.run(["ip", "link"], capture_output=True, text=True, check=True)
-        lines = result.stdout.split('\n')
-        interfaces = []
-        current_name = None
-        
-        for line in lines:
-            if ": " in line and "@" not in line.split(":")[0].strip():
-                # This is a main interface line
-                parts = line.split(": ")
-                if len(parts) >= 2:
-                    idx_part = parts[0].strip()
-                    if idx_part.isdigit():
-                        name_part = parts[1].split("@")[0]
-                        if name_part != "lo": # Skip loopback
-                            interfaces.append(name_part)
-        return interfaces
-    except Exception as e:
-        logger.error(f"Failed to list interfaces: {e}")
-        return []
-
-def change_mac_address(interface: str, mac_address: str):
-    """
-    Change the MAC address of a specific interface.
-    Requires root privileges.
-    """
+def change_mac_address(interface, mac_address):
     if os.name == 'nt':
-        raise MacChangerError("Windows support requires different commands (netsh). This script is for Linux.")
+        raise Exception("Windows is not supported. This tool requires Linux (ip command).")
     
+    if os.geteuid() != 0:
+        raise Exception("Root privileges required. Run with 'sudo'.")
+
     try:
-        # Bring interface down
-        subprocess.run(["ip", "link", "set", interface, "down"], check=True, capture_output=True)
+        # Bring down
+        p1 = subprocess.run(["ip", "link", "set", interface, "down"], capture_output=True, text=True)
+        if p1.returncode != 0:
+            raise Exception(f"Failed to bring down interface: {p1.stderr}")
         
         # Change MAC
-        result = subprocess.run(
-            ["ip", "link", "set", interface, "address", mac_address], 
-            capture_output=True, text=True
-        )
+        p2 = subprocess.run(["ip", "link", "set", interface, "address", mac_address], capture_output=True, text=True)
+        if p2.returncode != 0:
+            # Attempt to bring up again before raising error
+            subprocess.run(["ip", "link", "set", interface, "up"], capture_output=True)
+            raise Exception(f"Failed to change MAC (Driver/Hardware restriction?): {p2.stderr}")
         
-        if result.returncode != 0:
-            raise MacChangerError(f"Failed to set MAC: {result.stderr}")
-        
-        # Bring interface up
-        subprocess.run(["ip", "link", "set", interface, "up"], check=True, capture_output=True)
-        
-        logger.info(f"Successfully changed {interface} to {mac_address}")
+        # Bring up
+        p3 = subprocess.run(["ip", "link", "set", interface, "up"], capture_output=True, text=True)
+        if p3.returncode != 0:
+            raise Exception(f"Failed to bring up interface: {p3.stderr}")
+            
         return True
-    except subprocess.CalledProcessError as e:
-        logger.error(f"System command failed: {e}")
-        raise MacChangerError(f"Permission denied or interface error. Ensure you run as root. {e}")
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        raise MacChangerError(str(e))
+        raise e
 
-def restore_original_mac(interface: str, original_mac: str):
-    """Attempt to restore the original MAC (if hardware permits)."""
+def rotation_loop(interface, interval):
+    global is_running
+    log_event(f"Rotation started on {interface}. Interval: {interval}s", "WARN")
+    
+    # Safety Check: Warn if rotating the default gateway interface
+    default_iface = get_default_interface()
+    if default_iface and interface == default_iface:
+        log_event(f"CRITICAL: You are rotating the default connection interface ({interface}). You will lose connectivity!", "CRITICAL")
+    
+    count = 0
+    while is_running:
+        try:
+            new_mac = generate_random_mac()
+            log_event(f"Attempt {count+1}: Changing to {new_mac}")
+            
+            change_mac_address(interface, new_mac)
+            
+            log_event(f"SUCCESS: MAC changed to {new_mac}", "SUCCESS")
+            count += 1
+        except Exception as e:
+            error_msg = f"CRITICAL ERROR: {str(e)}"
+            log_event(error_msg, "ERROR")
+            is_running = False
+            break
+        
+        # Interruptible sleep
+        for _ in range(interval * 10):
+            if not is_running:
+                break
+            time.sleep(0.1)
+    
+    log_event("Rotation stopped.", "INFO")
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/api/status':
+            self.send_json({"is_running": is_running, "config": current_config if is_running else None})
+        elif self.path == '/api/logs':
+            with log_lock:
+                self.send_json(all_logs[-50:])
+        elif self.path == '/api/interfaces':
+            self.send_json({
+                "interfaces": ["eth0", "wlan0"], 
+                "warning": "Do not rotate the interface you are currently connected to."
+            })
+        else:
+            self.send_error(404)
+
+    def do_POST(self):
+        global is_running, current_config
+        if self.path == '/api/start':
+            if is_running:
+                self.send_json({"error": "Already running"}, 400)
+                return
+
+            content_len = int(self.headers['Content-Length'])
+            data = json.loads(self.rfile.read(content_len))
+            interface = data['interface']
+            interval = data['interval_seconds']
+            
+            # Validation: Check if interface exists
+            if not interface_exists(interface):
+                self.send_json({"error": f"Interface '{interface}' does not exist."}, 400)
+                return
+            
+            # Validation: Check for Windows
+            if os.name == 'nt':
+                self.send_json({"error": "Windows is not supported."}, 400)
+                return
+
+            # Validation: Check for Root
+            if os.geteuid() != 0:
+                self.send_json({"error": "Root privileges required. Run with sudo."}, 403)
+                return
+
+            # If all checks pass, start the rotation
+            is_running = True
+            current_config = {"interface": interface, "interval": interval}
+            
+            t = threading.Thread(target=rotation_loop, args=(interface, interval))
+            t.daemon = True
+            t.start()
+            
+            self.send_json({"status": "started"})
+            
+        elif self.path == '/api/stop':
+            is_running = False
+            self.send_json({"status": "stopped"})
+        else:
+            self.send_error(404)
+
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
+
+    def send_json(self, data, status=200):
+        self.send_response(status)
+        self.send_header('Content-type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode())
+
+    def log_message(self, format, *args):
+        pass
+
+if __name__ == "__main__":
     try:
-        subprocess.run(["ip", "link", "set", interface, "down"], check=True, capture_output=True)
-        subprocess.run(["ip", "link", "set", interface, "address", original_mac], check=True, capture_output=True)
-        subprocess.run(["ip", "link", "set", interface, "up"], check=True, capture_output=True)
-        logger.info(f"Restored original MAC for {interface}")
+        print(">>> INITIALIZING SERVER...")
+        if os.name == 'nt':
+            print("!!! WARNING: Windows detected. This tool will not function on Windows.")
+        if os.geteuid() != 0:
+            print("!!! WARNING: Not running as root. MAC changing will fail. Use 'sudo'.")
+        else:
+            print(">>> ROOT PRIVILEGES DETECTED. Ready to change MAC addresses.")
+            
+        server = HTTPServer(('0.0.0.0', 8000), Handler)
+        print(">>> SERVER IS RUNNING. Waiting for commands...")
+        server.serve_forever()
     except Exception as e:
-        logger.error(f"Could not restore original MAC: {e}")
+        print(f"\n!!! CRITICAL FAILURE: {e}")
+        input("Press Enter to exit...")
