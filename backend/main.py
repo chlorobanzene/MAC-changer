@@ -19,9 +19,24 @@ def log(msg):
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        # Serve frontend HTML (your existing code)
+        # Serve frontend HTML
         if self.path in ['/', '/index.html']:
-            # ... (keep your existing code here) ...
+            try:
+                backend_dir = os.path.dirname(os.path.abspath(__file__))
+                project_dir = os.path.dirname(backend_dir)
+                html_path = os.path.join(project_dir, 'frontend', 'index.html')
+                
+                with open(html_path, 'r') as f:
+                    content = f.read()
+                self.send_response(200)
+                self.send_header('Content-type', 'text/html')
+                self.end_headers()
+                self.wfile.write(content.encode())
+            except Exception as e:
+                self.send_response(200)
+                self.send_header('Content-type', 'text/html')
+                self.end_headers()
+                self.wfile.write(f"<h1>Error loading frontend</h1><p>{e}</p>".encode())
             return
         
         # API Endpoints
@@ -30,7 +45,8 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == '/api/logs':
             with lock:
                 self.send_json(logs[-50:])
-        elif self.path == '/api/interfaces':  # <-- ADD THIS BLOCK
+        elif self.path == '/api/interfaces':
+            # Auto-detect real interfaces
             try:
                 result = subprocess.run(["ip", "-o", "link", "show"], capture_output=True, text=True)
                 interfaces = []
@@ -47,13 +63,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self):
-        """THIS METHOD MUST EXIST OR YOU GET 501 ERROR"""
         global is_running
         
-        print(f">>> POST request received: {self.path}")  # Debug print
-        
         if self.path == '/api/start':
-            # Read the JSON body
             content_len = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_len)
             
@@ -72,31 +84,25 @@ class Handler(BaseHTTPRequestHandler):
             is_running = True
             log(f"Starting rotation on {interface}")
             
-            # Start rotation in background thread
             def rotate():
                 global is_running
-                count = 0
                 while is_running:
                     try:
-                        # Generate MAC
                         mac = ":".join([f"{random.randint(0,255):02x}" for _ in range(6)])
-                        mac = f"02{mac[2:]}"  # Ensure unicast bit
+                        mac = f"02{mac[2:]}"  # Unicast bit
                         
                         log(f"Changing {interface} to {mac}")
                         
-                        # Attempt to change MAC (requires root)
                         subprocess.run(["ip", "link", "set", interface, "down"], check=True, capture_output=True)
                         subprocess.run(["ip", "link", "set", interface, "address", mac], check=True, capture_output=True)
                         subprocess.run(["ip", "link", "set", interface, "up"], check=True, capture_output=True)
                         
                         log(f"Success: Changed to {mac}")
-                        count += 1
                     except Exception as e:
                         log(f"ERROR: {str(e)}")
                         is_running = False
                         break
                     
-                    # Sleep with interrupt check
                     for _ in range(interval * 10):
                         if not is_running: break
                         time.sleep(0.1)
@@ -124,13 +130,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(data).encode())
 
     def log_message(self, format, *args):
-        pass  # Suppress default HTTP logging
+        pass
 
 if __name__ == "__main__":
-    print(">>> Starting server on http://0.0.0.0:8000")
+    print(">>> Server running on http://0.0.0.0:8000")
     print(">>> Open http://127.0.0.1:8000 in your browser")
-    print(">>> WARNING: You MUST run this with 'sudo' for MAC changing to work")
-    
     server = HTTPServer(('0.0.0.0', 8000), Handler)
     try:
         server.serve_forever()
