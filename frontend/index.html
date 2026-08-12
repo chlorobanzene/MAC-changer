@@ -1,256 +1,62 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="content-width=device-width, initial-scale=1.0">
-    <title>MAC Address Rotator</title>
-    <style>
-        :root {
-            --bg: #0f172a;
-            --card: #1e293b;
-            --text: #f8fafc;
-            --text-muted: #94a3b8;
-            --primary: #3b82f6;
-            --danger: #ef4444;
-            --success: #22c55e;
-        }
-
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: var(--bg);
-            color: var(--text);
-            margin: 0;
-            padding: 20px;
-            display: flex;
-            justify-content: center;
-        }
-
-        .container {
-            max-width: 800px;
-            width: 100%;
-        }
-
-        h1 { text-align: center; margin-bottom: 30px; }
-
-        .card {
-            background-color: var(--card);
-            border-radius: 8px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-        }
-
-        .form-group {
-            margin-bottom: 15px;
-        }
-
-        label {
-            display: block;
-            margin-bottom: 5px;
-            color: var(--text-muted);
-        }
-
-        input, select {
-            width: 100%;
-            padding: 10px;
-            background-color: #0f172a;
-            border: 1px solid #334155;
-            color: white;
-            border-radius: 4px;
-            box-sizing: border-box;
-        }
-
-        button {
-            width: 100%;
-            padding: 12px;
-            border: none;
-            border-radius: 4px;
-            font-weight: bold;
-            cursor: pointer;
-            transition: opacity 0.2s;
-        }
-
-        button:hover { opacity: 0.9; }
-
-        .btn-start { background-color: var(--primary); color: white; }
-        .btn-stop { background-color: var(--danger); color: white; }
-        .btn-disabled { background-color: #475569; cursor: not-allowed; }
-
-        .status-badge {
-            display: inline-block;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 12px;
-            font-weight: bold;
-        }
-        .status-active { background-color: rgba(34, 197, 94, 0.2); color: var(--success); }
-        .status-inactive { background-color: rgba(148, 153, 160, 0.2); color: var(--text-muted); }
-
-        .log-container {
-            height: 300px;
-            overflow-y: auto;
-            font-family: 'Courier New', Courier, monospace;
-            font-size: 12px;
-            background-color: #000;
-            padding: 10px;
-            border-radius: 4px;
-            border: 1px solid #333;
-        }
-
-        .log-entry { margin-bottom: 4px; border-bottom: 1px solid #111; padding-bottom: 2px; }
-        .log-error { color: var(--danger); }
-        .log-info { color: var(--text-muted); }
-        .log-success { color: var(--success); }
-    </style>
-</head
+    <title>MAC Rotator - Minimal</title>
+</head>
 <body>
-    <div class="container">
-        <h1>MAC Address Rotator</h1>
-
-        <div class="card">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                <h2>Control Panel</h2>
-                <span id="statusIndicator" class="status-badge status-inactive">STOPPED</span>
-            </div>
-
-            <div id="configForm">
-                <div class="form-group">
-                    <label>Network Interface</label>
-                    <select id="interface">
-                        <option value="eth0">eth0 (Ethernet)</option>
-                        <option value="wlan0">wlan0 (Wi-Fi)</option>
-                        <!-- In a real app, populate this from API -->
-                    </select>
-                </div>
-
-                <div class="form-group">
-                    <label>Rotation Interval (seconds)</label>
-                    <input type="number" id="interval" value="60" min="5">
-                </div>
-
-                <button id="startBtn" class="btn-start" onclick="startRotation">Start Rotation</button>
-                <button id="stopBtn" class="btn-stop btn-disabled" onclick="stopRotation" disabled>Stop Rotation</button>
-            </div>
-        </div>
-
-        <div class="card">
-            <h2>Activity Logs</h2>
-            <div id="logs" class="log-container">
-                <div class="log-entry log-info">System ready. Waiting for commands.</div>
-            </div>
-        </div>
-    </div>
+    <h1>MAC Rotator Test</h1>
+    <p>If you see this, HTML is loading.</p>
+    
+    <button onclick="testConnection()">TEST CONNECTION (Start)</button>
+    <button onclick="stopConnection()">STOP</button>
+    
+    <pre id="output" style="background:#000; color:#0f0; padding:10px;">Waiting...</pre>
 
     <script>
-        const API_URL = 'http://localhost:8000/api';
-        let pollInterval = null;
+        // If this alert does NOT pop up, your browser is caching the old file.
+        // Press Ctrl+Shift+R or use Incognito Mode.
+        alert("JavaScript Loaded Successfully!");
 
-        async function checkStatus() {
-            try {
-                const response = await fetch(`${API_URL}/status`);
-                const data = await response.json();
-                
-                const statusEl = document.getElementById('statusIndicator');
-                const startBtn = document.getElementById('startBtn');
-                const stopBtn = document.getElementById('stopBtn');
-
-                if (data.is_running) {
-                    statusEl.textContent = "RUNNING";
-                    statusEl.className = "status-badge status-active";
-                    startBtn.disabled = true;
-                    startBtn.className = "btn-disabled";
-                    stopBtn.disabled = false;
-                    stopBtn.className = "btn-stop";
-                } else {
-                    statusEl.textContent = "STOPPED";
-                    statusEl.className = "status-badge status-inactive";
-                    startBtn.disabled = false;
-                    startBtn.className = "btn-start";
-                    stopBtn.disabled = true;
-                    stopBtn.className = "btn-disabled btn-stop";
-                    
-                    if (pollInterval) {
-                        clearInterval(pollInterval);
-                        pollInterval = null;
-                    }
-                }
-            } catch (error) {
-                console.error("Failed to check status", error);
-            }
+        function log(msg) {
+            document.getElementById('output').innerText = msg;
+            console.log(msg);
         }
 
-        async function fetchLogs() {
+        async function testConnection() {
+            log("Attempting to connect to backend...");
             try {
-                const response = await fetch(`${API_URL}/logs`);
-                const logs = await response.json();
-                const logContainer = document.getElementById('logs');
-                
-                // Clear and rebuild logs (simple approach)
-                logContainer.innerHTML = '';
-                logs.forEach(log => {
-                    const div = document.createElement('div');
-                    div.className = 'log-entry';
-                    if (log.message.toLowerCase().includes('error')) {
-                        div.className += ' log-error';
-                    } else if (log.message.toLowerCase().includes('success')) {
-                        div.className += ' log-success';
-                    } else {
-                        div.className += ' log-info';
-                    }
-                    div.textContent = `[${new Date().toLocaleTimeString()}] ${log.message}`;
-                    logContainer.appendChild(div);
-                });
-                
-                // Auto scroll to bottom
-                logContainer.scrollTop = logContainer.scrollHeight;
-            } catch (error) {
-                console.error("Failed to fetch logs", error);
-            }
-        }
-
-        async function startRotation() {
-            const interface = document.getElementById('interface').value;
-            const interval = document.getElementById('interval').value;
-
-            if (interval < 5) {
-                alert("Interval must be at least 5 seconds");
-                return;
-            }
-
-            try {
-                const response = await fetch(`${API_URL}/start`, {
+                // We use 127.0.0.1 to bypass any DNS issues
+                const response = await fetch('http://127.0.0.1:8000/api/start', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ interface, interval_seconds: parseInt(interval) })
+                    body: JSON.stringify({ interface: 'eth0', interval_seconds: 60 })
                 });
-
-                if (!response.ok) {
-                    const error = await response.json();
-                    alert(error.detail || "Failed to start");
-                    return;
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    log("SUCCESS: Backend responded. Rotation started (or attempted). Check server logs.");
+                    alert("SUCCESS! The backend is working.");
+                } else {
+                    log("ERROR: Backend rejected request. Response: " + JSON.stringify(data));
+                    alert("Error from server: " + JSON.stringify(data));
                 }
-
-                // Start polling for status and logs
-                checkStatus();
-                pollInterval = setInterval(checkStatus, 2000);
-                setInterval(fetchLogs, 1000); // Poll logs frequently
             } catch (error) {
-                alert("Connection failed. Is the backend running?");
+                log("CRITICAL: Could not connect to backend. Error: " + error.message);
+                alert("Connection Failed: " + error.message);
             }
         }
 
-        async function stopRotation() {
+        async function stopConnection() {
+            log("Attempting to stop...");
             try {
-                await fetch(`${API_URL}/stop`, { method: 'POST' });
-                checkStatus();
+                await fetch('http://127.0.0.1:8000/api/stop', { method: 'POST' });
+                log("Stop command sent.");
+                alert("Stop command sent.");
             } catch (error) {
-                alert("Failed to stop rotation");
+                log("Stop failed: " + error.message);
             }
         }
-
-        // Initial check
-        checkStatus();
-        setInterval(fetchLogs, 2000); // Initial log polling
     </script>
 </body>
 </html>
