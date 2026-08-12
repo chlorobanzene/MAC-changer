@@ -4,18 +4,38 @@ import os
 import threading
 import time
 import json
+import re
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Global State
 is_running = False
 logs = []
 lock = threading.Lock()
+current_config = {
+    "interface": None, 
+    "interval": 0, 
+    "original_mac": None,
+    "current_mac": None
+}
 
 def log(msg):
     with lock:
         logs.append({"message": msg, "time": time.time()})
         if len(logs) > 50: logs.pop(0)
     print(f"[LOG] {msg}")
+
+def get_mac_address(interface):
+    """Get the current MAC address of an interface."""
+    try:
+        result = subprocess.run(["ip", "link", "show", interface], capture_output=True, text=True)
+        if result.returncode == 0:
+            # Look for link/ether line
+            match = re.search(r'link/ether\s+([0-9a-f:]{17})', result.stdout)
+            if match:
+                return match.group(1)
+    except Exception as e:
+        log(f"Error reading MAC: {e}")
+    return "Unknown"
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -41,12 +61,19 @@ class Handler(BaseHTTPRequestHandler):
         
         # API Endpoints
         if self.path == '/api/status':
-            self.send_json({"is_running": is_running})
+            self.send_json({
+                "is_running": is_running,
+                "config": {
+                    "interface": current_config.get("interface"),
+                    "interval": current_config.get("interval"),
+                    "original_mac": current_config.get("original_mac"),
+                    "current_mac": get_mac_address(current_config.get("interface")) if current_config.get("interface") else None
+                }
+            })
         elif self.path == '/api/logs':
             with lock:
                 self.send_json(logs[-50:])
         elif self.path == '/api/interfaces':
-            # Auto-detect real interfaces
             try:
                 result = subprocess.run(["ip", "-o", "link", "show"], capture_output=True, text=True)
                 interfaces = []
@@ -59,11 +86,24 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"interfaces": interfaces if interfaces else ["eth0", "wlan0"]})
             except:
                 self.send_json({"interfaces": ["eth0", "wlan0"]})
+        elif self.path == '/api/mac':
+            # Return current MAC info for the active interface
+            iface = current_config.get("interface")
+            if iface:
+                current = get_mac_address(iface)
+                self.send_json({
+                    "interface": iface,
+                    "original_mac": current_config.get("original_mac"),
+                    "current_mac": current,
+                    "is_running": is_running
+                })
+            else:
+                self.send_json({"interface": None, "original_mac": None, "current_mac": None})
         else:
             self.send_error(404)
 
     def do_POST(self):
-        global is_running
+        global is_running, current_config
         
         if self.path == '/api/start':
             content_len = int(self.headers.get('Content-Length', 0))
@@ -81,15 +121,30 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Already running"}, 400)
                 return
             
+            # Capture original MAC before starting
+            original_mac = get_mac_address(interface)
+            if original_mac == "Unknown":
+                self.send_json({"error": f"Cannot read MAC of interface {interface}. Does it exist?"}, 400)
+                return
+            
             is_running = True
+            current_config = {
+                "interface": interface,
+                "interval": interval,
+                "original_mac": original_mac,
+                "current_mac": original_mac
+            }
+            
             log(f"Starting rotation on {interface}")
+            log(f"Original MAC: {original_mac}")
             
             def rotate():
-                global is_running
+                global is_running, current_config
                 while is_running:
                     try:
+                        # Generate random MAC
                         mac = ":".join([f"{random.randint(0,255):02x}" for _ in range(6)])
-                        mac = f"02{mac[2:]}"  # Unicast bit
+                        mac = f"02{mac[2:]}"  # Ensure unicast bit
                         
                         log(f"Changing {interface} to {mac}")
                         
@@ -97,6 +152,7 @@ class Handler(BaseHTTPRequestHandler):
                         subprocess.run(["ip", "link", "set", interface, "address", mac], check=True, capture_output=True)
                         subprocess.run(["ip", "link", "set", interface, "up"], check=True, capture_output=True)
                         
+                        current_config["current_mac"] = mac
                         log(f"Success: Changed to {mac}")
                     except Exception as e:
                         log(f"ERROR: {str(e)}")
@@ -113,7 +169,11 @@ class Handler(BaseHTTPRequestHandler):
             t.daemon = True
             t.start()
             
-            self.send_json({"status": "started", "interface": interface})
+            self.send_json({
+                "status": "started", 
+                "interface": interface,
+                "original_mac": original_mac
+            })
             
         elif self.path == '/api/stop':
             is_running = False
