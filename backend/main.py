@@ -19,26 +19,9 @@ def log(msg):
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        # Serve frontend HTML
+        # Serve frontend HTML (your existing code)
         if self.path in ['/', '/index.html']:
-            try:
-                # Try to find frontend relative to this file
-                backend_dir = os.path.dirname(os.path.abspath(__file__))
-                project_dir = os.path.dirname(backend_dir)
-                html_path = os.path.join(project_dir, 'frontend', 'index.html')
-                
-                with open(html_path, 'r') as f:
-                    content = f.read()
-                self.send_response(200)
-                self.send_header('Content-type', 'text/html')
-                self.end_headers()
-                self.wfile.write(content.encode())
-            except Exception as e:
-                # If file not found, show a simple error page
-                self.send_response(200)
-                self.send_header('Content-type', 'text/html')
-                self.end_headers()
-                self.wfile.write(f"<h1>Error loading frontend</h1><p>{e}</p><p>Expected file at: {html_path}</p>".encode())
+            # ... (keep your existing code here) ...
             return
         
         # API Endpoints
@@ -47,6 +30,19 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == '/api/logs':
             with lock:
                 self.send_json(logs[-50:])
+        elif self.path == '/api/interfaces':  # <-- ADD THIS BLOCK
+            try:
+                result = subprocess.run(["ip", "-o", "link", "show"], capture_output=True, text=True)
+                interfaces = []
+                for line in result.stdout.splitlines():
+                    if "lo:" not in line:
+                        parts = line.split()
+                        if len(parts) > 1:
+                            iface = parts[1].rstrip(':')
+                            interfaces.append(iface)
+                self.send_json({"interfaces": interfaces if interfaces else ["eth0", "wlan0"]})
+            except:
+                self.send_json({"interfaces": ["eth0", "wlan0"]})
         else:
             self.send_error(404)
 
